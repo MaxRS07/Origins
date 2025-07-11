@@ -44,6 +44,9 @@ using Origins.Backgrounds;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 using ThoriumMod.Projectiles;
 using System.Numerics;
+using Terraria.Graphics.Shaders;
+using Mono.Cecil;
+using static tModPorter.ProgressUpdate;
 
 namespace Origins {
 	#region classes
@@ -1643,6 +1646,112 @@ namespace Origins {
 				hitbox.Height = (int)(hitbox.Height * 1.4);
 				break;
 			}
+		}
+		public static Vector2 MapUV(this Rectangle rect, Point point) {
+			float U = (point.X - rect.Left) / (float)(rect.Right - rect.Left);
+			float V = (point.Y - rect.Bottom) / (float)(rect.Top - rect.Bottom);
+
+			return new Vector2(
+				MathHelper.Clamp(U, 0, 1),
+				MathHelper.Clamp(1f - V, 0, 1)
+			);
+		}
+		public static void DrawTriangleFill(this SpriteBatch spriteBatch, Vector2 A, Vector2 B, Vector2 C, Asset<Texture2D> fillTexture) {
+			var og = spriteBatch.GraphicsDevice;
+			spriteBatch.End();
+			spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend, SamplerState.LinearClamp, DepthStencilState.Default, RasterizerState.CullNone, null, Main.GameViewMatrix.ZoomMatrix);
+
+			Vector2 p = A - Main.screenPosition;
+			Vector2 p2 = B - Main.screenPosition;
+			Vector2 p3 = C - Main.screenPosition;
+
+			float minX = MathF.Min(MathF.Min(p.X, p2.X), p3.X);
+			float minY = MathF.Min(MathF.Min(p.Y, p2.Y), p3.Y);
+
+			float maxX = MathF.Max(MathF.Max(p.X, p2.X), p3.X);
+			float maxY = MathF.Max(MathF.Max(p.Y, p2.Y), p3.Y);
+
+			Rectangle dest = new Rectangle((int)minX, (int)minY, (int)(maxX - minX), (int)(maxY - minY));
+
+			Vector2 m1 = dest.MapUV(p.ToPoint());
+			Vector2 m2 = dest.MapUV(p2.ToPoint()); // to texture space
+			Vector2 m3 = dest.MapUV(p3.ToPoint());
+
+			MiscShaderData effect = GameShaders.Misc["Fill"];
+			effect.UseColor(new Color(m3.X, m3.Y, 0));
+			effect.UseShaderSpecificData(new Vector4(Main.screenPosition.X / Main.screenWidth, Main.screenPosition.Y / Main.screenHeight, m2.X, m2.Y));
+			effect.UseOpacity(m1.X);
+			effect.UseSaturation(m1.Y);
+			effect.UseImage0(fillTexture);
+			effect.Apply();
+
+			DrawData data = new DrawData(
+				fillTexture.Value,
+				dest,
+				new Rectangle(0, 0, fillTexture.Width(), fillTexture.Height()),
+				Color.White,
+				0,
+				new Vector2(0f),
+				SpriteEffects.None
+			);
+			data.Draw(Main.spriteBatch);
+
+			spriteBatch.Restart();
+		}
+		public static void DrawConstellationLine(SpriteBatch spriteBatch, Vector2 start, Vector2 end, float width = 20, float distort = 30, float waveSpeed = 0.1f) {
+			var shader = GameShaders.Misc["Constellation"];
+			shader.UseSaturation(width);
+			shader.UseOpacity(distort);
+
+			var noise = ModContent.Request<Texture2D>("Origins/Effects/perlin");
+			var space = ModContent.Request<Texture2D>("Origins/Items/Weapons/Ranged/Constellation_Fill");
+
+			var screenPos = Main.screenPosition / new Vector2(Main.screenWidth, Main.screenHeight);
+			var source = new Rectangle(0, 0, space.Width(), space.Height());
+
+			shader.UseImage0(space);
+			shader.UseImage1(noise);
+
+			Main.spriteBatch.End();
+			Main.spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend, SamplerState.LinearClamp, DepthStencilState.Default, RasterizerState.CullNone, null, Main.GameViewMatrix.ZoomMatrix);
+
+			var minX = (int)Math.Min(start.X, end.X);
+			var minY = (int)Math.Min(start.Y, end.Y);
+			var maxX = (int)Math.Max(start.X, end.X);
+			var maxY = (int)Math.Max(start.Y, end.Y);
+
+			int offset = (int)20;
+			var dest = new Rectangle(
+				minX - offset,
+				minY - offset,
+				maxX - minX + offset * 2,
+				maxY - minY + offset * 2
+			);
+			var speed = 0.1f;
+			shader.UseColor(speed, speed, 0f);
+			shader.UseShaderSpecificData(
+			new Vector4(screenPos, dest.Width, dest.Height)
+			);
+
+			var uv1 = dest.MapUV(start.ToPoint());
+			var uv2 = dest.MapUV(end.ToPoint());
+
+			shader.Shader.SetConstellationNodes(uv1, uv2);
+			shader.Apply();
+
+			DrawData rect = new(
+				space.Value,
+				dest,
+				source,
+				Color.White,
+				0f,
+				Vector2.Zero,
+				SpriteEffects.None
+			);
+
+			rect.Draw(spriteBatch);
+
+			Main.spriteBatch.Restart();
 		}
 		public static void DrawLine(this SpriteBatch spriteBatch, Color color, Vector2 start, Vector2 end, int thickness = 2) {
 			Rectangle drawRect = new Rectangle(
@@ -4750,6 +4859,9 @@ namespace Origins {
 				OriginsModIntegrations.GoToKeybind(keybind);
 			}
 			return line;
+		}
+		public static void SetConstellationNodes(this Effect constellation, Vector2 nodeUVStart, Vector2 nodeUVEnd) {
+			constellation.Parameters[10].SetValue(new Vector4(nodeUVStart.X, nodeUVStart.Y, nodeUVEnd.X, nodeUVEnd.Y));
 		}
 		public static float DifficultyDamageMultiplier {
 			get {
